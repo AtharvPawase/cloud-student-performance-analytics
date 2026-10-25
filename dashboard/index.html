@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Student Performance Analytics — Live Cloud Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root{
+  --paper:#EDF0EE; --surface:#FFFFFF; --surface-2:#F6F8F7; --band:#122A2C;
+  --ink:#16262B; --ink-2:#4C5F65; --ink-3:#7E9095; --rule:#D6DDDB; --rule-2:#E7ECEA;
+  --accent:#0E5C48; --accent-soft:#DCEBE4;
+  --alert:#B03A26; --alert-soft:#F5DFD9;
+  --s1:#0E5C48; --s2:#2A6B95; --s3:#C08418; --s4:#6A4C93; --s5:#2E8C8C; --s6:#B4456F;
+  --grid:#E4E9E7; --chip:#EAEFEC;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+  color-scheme:light dark;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#0D1A1C; --surface:#152628; --surface-2:#1A2E31; --band:#0A1517;
+    --ink:#E9F0ED; --ink-2:#A9BEB9; --ink-3:#7C9490; --rule:#26393B; --rule-2:#1F3234;
+    --accent:#45B98D; --accent-soft:#16352C;
+    --alert:#E4785F; --alert-soft:#3A2119;
+    --s1:#45B98D; --s2:#6BAEDA; --s3:#DDAA4E; --s4:#A98BD6; --s5:#54B8B8; --s6:#DB7BA0;
+    --grid:#22373A; --chip:#1E3336;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0D1A1C; --surface:#152628; --surface-2:#1A2E31; --band:#0A1517;
+  --ink:#E9F0ED; --ink-2:#A9BEB9; --ink-3:#7C9490; --rule:#26393B; --rule-2:#1F3234;
+  --accent:#45B98D; --accent-soft:#16352C;
+  --alert:#E4785F; --alert-soft:#3A2119;
+  --s1:#45B98D; --s2:#6BAEDA; --s3:#DDAA4E; --s4:#A98BD6; --s5:#54B8B8; --s6:#DB7BA0;
+  --grid:#22373A; --chip:#1E3336;
+}
+*,*::before,*::after{box-sizing:inherit}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{
+  margin:0; background:var(--paper); color:var(--ink);
+  font-family:'IBM Plex Sans',system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  font-size:15px; line-height:1.5; -webkit-font-smoothing:antialiased;
+  font-variant-numeric:tabular-nums;
+}
+h1,h2,h3,.num{font-family:'Bricolage Grotesque','IBM Plex Sans',system-ui,sans-serif}
+.wrap{max-width:1280px;margin:0 auto;padding:0 18px 56px}
+
+/* ---------- header band ---------- */
+.band{background:var(--band);color:#EAF2EF;position:sticky;top:env(safe-area-inset-top,0px);z-index:40;border-bottom:1px solid rgba(255,255,255,.08)}
+.band-in{max-width:1280px;margin:0 auto;padding:12px 18px;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+.mark{display:flex;align-items:baseline;gap:10px;margin-right:auto}
+.mark h1{font-size:19px;margin:0;font-weight:700;letter-spacing:-.01em;color:#F2F7F5}
+.mark span{font-size:12.5px;color:#8FB0A8}
+.live{display:flex;align-items:center;gap:8px;font-size:13px;color:#BFD6CF;background:rgba(255,255,255,.06);padding:5px 11px;border-radius:999px}
+.dot{width:8px;height:8px;border-radius:50%;background:#4ADE9E;box-shadow:0 0 0 0 rgba(74,222,158,.6);animation:pulse 2.2s infinite}
+.dot.off{background:#8FA6A1;animation:none;box-shadow:none}
+@keyframes pulse{70%{box-shadow:0 0 0 9px rgba(74,222,158,0)}100%{box-shadow:0 0 0 0 rgba(74,222,158,0)}}
+@media (prefers-reduced-motion:reduce){.dot{animation:none}}
+.band button{font:inherit;font-size:13px;color:#DCEAE5;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);padding:6px 12px;border-radius:6px;cursor:pointer}
+.band button:hover{background:rgba(255,255,255,.16)}
+
+/* ---------- filter strip ---------- */
+.filters{background:var(--surface);border-bottom:1px solid var(--rule);position:sticky;top:calc(env(safe-area-inset-top,0px) + 53px);z-index:30}
+.filters-in{max-width:1280px;margin:0 auto;padding:11px 18px;display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end}
+.field{display:flex;flex-direction:column;gap:4px;min-width:0}
+.field label{font-size:11.5px;color:var(--ink-3);letter-spacing:.01em}
+.field select,.field input{
+  font:inherit;font-size:13.5px;color:var(--ink);background:var(--surface-2);
+  border:1px solid var(--rule);border-radius:5px;padding:6px 9px;min-width:132px;max-width:190px;
+}
+.field input[type="date"]{min-width:138px}
+.reset{font:inherit;font-size:13px;color:var(--accent);background:none;border:1px solid var(--rule);border-radius:5px;padding:7px 12px;cursor:pointer}
+.reset:hover{background:var(--accent-soft)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* ---------- kpi ribbon ---------- */
+.ribbon{display:grid;grid-template-columns:repeat(8,1fr);background:var(--surface);border:1px solid var(--rule);border-top:none;margin:0 0 18px}
+.kpi{padding:14px 16px 15px;border-left:1px solid var(--rule-2);min-width:0}
+.kpi:first-child{border-left:none}
+.kpi .k-label{font-size:11.5px;color:var(--ink-3);margin-bottom:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpi .num{font-size:27px;font-weight:700;letter-spacing:-.02em;line-height:1.05}
+.kpi .k-sub{font-size:11.5px;color:var(--ink-2);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpi.good .num{color:var(--accent)} .kpi.bad .num{color:var(--alert)}
+
+/* ---------- panels ---------- */
+.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}
+.panel{background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--sp,var(--ink-3));border-radius:4px;padding:15px 16px 16px;min-width:0}
+.col-7{grid-column:span 7} .col-5{grid-column:span 5} .col-12{grid-column:span 12}
+.col-6{grid-column:span 6} .col-8{grid-column:span 8} .col-4{grid-column:span 4}
+.p-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:2px}
+.panel h2{font-size:15.5px;margin:0;font-weight:600;letter-spacing:-.01em}
+.p-note{font-size:12.5px;color:var(--ink-2);margin:0 0 12px}
+.tag{font-size:11.5px;color:var(--ink-3);white-space:nowrap}
+.chart{position:relative;height:262px}
+.chart.tall{height:300px}
+.chart.short{height:222px}
+
+/* ---------- feed ---------- */
+.feed{list-style:none;margin:0;padding:0;font-size:13px}
+.feed li{display:flex;gap:10px;padding:7px 0;border-bottom:1px dashed var(--rule-2);color:var(--ink-2)}
+.feed li:last-child{border-bottom:none}
+.feed time{color:var(--ink-3);flex:0 0 62px}
+.feed b{color:var(--ink);font-weight:500}
+.meter{display:flex;gap:16px;margin:2px 0 12px;flex-wrap:wrap}
+.meter div{font-size:12.5px;color:var(--ink-3)}
+.meter strong{display:block;font-family:'Bricolage Grotesque',sans-serif;font-size:19px;color:var(--ink);font-weight:700}
+
+/* ---------- table ---------- */
+.t-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{border-collapse:collapse;width:100%;font-size:13.5px;min-width:660px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--rule-2);white-space:nowrap}
+th{font-size:12px;color:var(--ink-3);font-weight:500;cursor:pointer;user-select:none;border-bottom:1px solid var(--rule)}
+th:hover{color:var(--accent)}
+th[data-dir]::after{content:"↑";margin-left:5px;font-size:10px}
+th[data-dir="desc"]::after{content:"↓"}
+td.n{text-align:right;font-variant-numeric:tabular-nums}
+th.n{text-align:right}
+tbody tr:hover{background:var(--surface-2)}
+.chip{display:inline-block;font-size:11.5px;padding:2px 8px;border-radius:999px;background:var(--chip);color:var(--ink-2)}
+.chip.pass{background:var(--accent-soft);color:var(--accent)}
+.chip.risk{background:var(--alert-soft);color:var(--alert)}
+.bar-cell{display:flex;align-items:center;gap:8px;justify-content:flex-end}
+.bar-cell i{display:block;height:5px;border-radius:3px;background:var(--accent);opacity:.75}
+.more{margin-top:10px;font:inherit;font-size:13px;background:none;border:1px solid var(--rule);color:var(--ink-2);border-radius:5px;padding:6px 12px;cursor:pointer}
+.more:hover{border-color:var(--accent);color:var(--accent)}
+
+/* ---------- pipeline ---------- */
+.pipe{margin-top:22px;background:var(--surface);border:1px solid var(--rule);border-radius:4px;padding:18px}
+.pipe h2{font-size:16px;margin:0 0 4px}
+.steps{display:grid;grid-template-columns:repeat(5,1fr);gap:0;margin-top:14px}
+.step{padding:0 16px;border-left:1px solid var(--rule-2)}
+.step:first-child{border-left:none;padding-left:0}
+.step b{display:block;font-size:13.5px;margin-bottom:4px;color:var(--ink)}
+.step em{font-style:normal;font-family:'Bricolage Grotesque',sans-serif;font-size:12px;color:var(--accent);display:block;margin-bottom:6px}
+.step p{margin:0;font-size:12.8px;color:var(--ink-2);line-height:1.45}
+footer{margin-top:26px;font-size:12.5px;color:var(--ink-3);display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+
+@media (max-width:1080px){
+  .ribbon{grid-template-columns:repeat(4,1fr)}
+  .kpi:nth-child(4n+1){border-left:none}
+  .kpi:nth-child(n+5){border-top:1px solid var(--rule-2)}
+  .col-7,.col-5,.col-6,.col-8,.col-4{grid-column:span 12}
+  .steps{grid-template-columns:repeat(2,1fr);gap:14px 0}
+  .step:nth-child(odd){border-left:none;padding-left:0}
+}
+@media (max-width:620px){
+  body{font-size:14.5px}
+  .wrap{padding:0 12px 44px}
+  .band-in,.filters-in{padding-left:12px;padding-right:12px}
+  .ribbon{grid-template-columns:repeat(2,1fr)}
+  .kpi:nth-child(2n+1){border-left:none}
+  .kpi:nth-child(n+3){border-top:1px solid var(--rule-2)}
+  .kpi .num{font-size:23px}
+  .field select,.field input{min-width:128px;flex:1}
+  .filters{position:static}
+  .steps{grid-template-columns:1fr}
+  .step{border-left:none;padding-left:0;border-top:1px solid var(--rule-2);padding-top:12px}
+  .step:first-child{border-top:none;padding-top:0}
+  .chart{height:232px}
+}
+#login{position:fixed;inset:0;z-index:100;background:var(--paper);display:grid;place-items:center}
+#login[hidden]{display:none}
+#login form{background:var(--surface);border:1px solid var(--rule);padding:28px;border-radius:8px;display:grid;gap:12px;width:min(92vw,340px)}
+#login h2{margin:0}#login p{margin:0;color:var(--ink-2);font-size:13px;min-height:1.3em}
+#login input{padding:9px 10px;border:1px solid var(--rule);border-radius:4px;background:var(--surface-2);color:var(--ink);font:inherit}
+#login button{padding:10px;background:var(--accent);color:#fff;border:0;border-radius:4px;font:inherit;font-weight:600;cursor:pointer}
+</style>
+</head>
+<body>
+<div id="login"><form id="loginForm"><h2>Sign in</h2><p>Use the account created by your administrator.</p>
+<input id="email" type="email" placeholder="Email" autocomplete="username" required>
+<input id="password" type="password" placeholder="Password" autocomplete="current-password" required>
+<button type="submit">Sign in</button><p id="loginMsg" role="status"></p></form></div>
+
+
+<div class="band">
+  <div class="band-in">
+    <div class="mark">
+      <h1>Student Performance Analytics</h1>
+      <span>Sunrise Institute of Technology · cloud dashboard</span>
+    </div>
+    <div class="live"><span class="dot" id="dot"></span><span id="liveTxt">Live · synced just now</span></div>
+    <button id="toggleLive">Pause sync</button>
+    <button id="toggleTheme">Dark</button>
+  </div>
+</div>
+
+<div class="filters">
+  <div class="filters-in">
+    <div class="field"><label for="fClass">Class</label><select id="fClass"></select></div>
+    <div class="field"><label for="fSection">Section</label><select id="fSection"></select></div>
+    <div class="field"><label for="fSubject">Subject</label><select id="fSubject"></select></div>
+    <div class="field"><label for="fSem">Semester</label><select id="fSem"></select></div>
+    <div class="field"><label for="fStudent">Student</label><select id="fStudent"></select></div>
+    <div class="field"><label for="fFrom">From date</label><input type="date" id="fFrom"></div>
+    <div class="field"><label for="fTo">To date</label><input type="date" id="fTo"></div>
+    <button class="reset" id="reset">Clear filters</button>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <div class="ribbon" id="ribbon"></div>
+
+  <div class="grid">
+
+    <section class="panel col-7" style="--sp:var(--s1)">
+      <div class="p-head"><h2>Subject-wise average marks</h2><span class="tag">out of 100</span></div>
+      <p class="p-note">Which subjects the selected students find easy, and which need extra classes. The pass mark is 40.</p>
+      <div class="chart"><canvas id="cSubject"></canvas></div>
+    </section>
+
+    <section class="panel col-5" style="--sp:var(--s6)">
+      <div class="p-head"><h2>Pass and fail share</h2><span class="tag" id="resultCount"></span></div>
+      <p class="p-note">Each result is one student in one subject, scored on the average of all their assessments.</p>
+      <div class="chart"><canvas id="cResult"></canvas></div>
+    </section>
+
+    <section class="panel col-12" style="--sp:var(--s2)">
+      <div class="p-head"><h2>Performance trend across assessments</h2><span class="tag">Apr 2026 – Sep 2026</span></div>
+      <p class="p-note">Average marks for each assessment month, drawn separately for every class in the current selection.</p>
+      <div class="chart tall"><canvas id="cTrend"></canvas></div>
+    </section>
+
+    <section class="panel col-7" style="--sp:var(--s4)">
+      <div class="p-head"><h2>Class and section comparison</h2><span class="tag">marks vs attendance</span></div>
+      <p class="p-note">Marks and attendance side by side, so a low-scoring group with poor attendance is easy to spot.</p>
+      <div class="chart"><canvas id="cClass"></canvas></div>
+    </section>
+
+    <section class="panel col-5" style="--sp:var(--s3)">
+      <div class="p-head"><h2>Attendance distribution</h2><span class="tag">students per band</span></div>
+      <p class="p-note">How many students fall in each attendance band. Below 75% usually needs a warning letter.</p>
+      <div class="chart"><canvas id="cAttend"></canvas></div>
+    </section>
+
+    <section class="panel col-7" style="--sp:var(--s5)">
+      <div class="p-head"><h2>Attendance against marks</h2><span class="tag">one dot = one student</span></div>
+      <p class="p-note">Dots rising to the right show that students who attend more usually score more.</p>
+      <div class="chart"><canvas id="cScatter"></canvas></div>
+    </section>
+
+    <section class="panel col-5" style="--sp:var(--s1)">
+      <div class="p-head"><h2>Live data feed</h2><span class="tag">from the cloud database</span></div>
+      <p class="p-note">New marks and attendance entries arriving from teachers, applied to every chart above.</p>
+      <div class="meter">
+        <div>Records stored<strong id="mRecords">0</strong></div>
+        <div>Added this session<strong id="mNew">0</strong></div>
+        <div>Last sync<strong id="mSync">—</strong></div>
+      </div>
+      <ul class="feed" id="feed"></ul>
+    </section>
+
+    <section class="panel col-12" style="--sp:var(--s2)">
+      <div class="p-head"><h2>Student performance record</h2><span class="tag" id="tableCount"></span></div>
+      <p class="p-note">Sort any column by clicking its heading. Students marked “needs support” are below 45 marks or below 70% attendance.</p>
+      <div class="t-wrap">
+        <table id="tbl">
+          <thead><tr>
+            <th data-k="roll">Roll no.</th>
+            <th data-k="name">Student</th>
+            <th data-k="cls">Class</th>
+            <th data-k="sec">Section</th>
+            <th class="n" data-k="marks" data-dir="desc">Average marks</th>
+            <th class="n" data-k="att">Attendance</th>
+            <th class="n" data-k="cleared">Subjects cleared</th>
+            <th data-k="status">Status</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <button class="more" id="more"></button>
+    </section>
+  </div>
+
+  <div class="pipe">
+    <h2>How this dashboard gets its numbers</h2>
+    <p class="p-note">The same five stages run in the cloud every time a teacher saves a mark.</p>
+    <div class="steps">
+      <div class="step"><em>Stage 1</em><b>Data collection</b><p>Teachers enter marks and attendance in a web form; the exam section can upload a CSV. Every entry is checked for range and duplicates before it is accepted.</p></div>
+      <div class="step"><em>Stage 2</em><b>Cloud storage</b><p>Validated records are written through a REST API to a managed cloud database holding students, subjects, marks and attendance tables.</p></div>
+      <div class="step"><em>Stage 3</em><b>Cloud processing</b><p>A serverless function triggers on every write, cleans the record and recalculates averages, pass status and subject summaries.</p></div>
+      <div class="step"><em>Stage 4</em><b>Real-time delivery</b><p>The summary tables are published on a live channel. The dashboard subscribes to it, so a saved mark reaches the screen in a few seconds without a page reload.</p></div>
+      <div class="step"><em>Stage 5</em><b>Visualisation</b><p>The browser applies the selected filters, recomputes the KPIs and redraws every chart and table from the updated summaries.</p></div>
+    </div>
+  </div>
+
+  <footer>
+    <span>Demonstration dataset: 90 students · 6 subjects · 6 assessment months. Figures are simulated for a college field project.</span>
+    <span>Pass mark 40 · attendance warning below 75%</span>
+  </footer>
+</div>
+
+<script src="config.js"></script>
+<script>
+/* ========== 1. Cloud data layer (replaces the browser-generated sample data) ========== */
+const CFG=window.APP_CONFIG,PASS=40,MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+let SUBJECTS=[],CLASSES=[],SECTIONS=[],PERIODS=[],STUDENTS=[],rows=[],S_BY_ID={},TODAY='',FROM='',tokens=null;
+const state={live:true,added:0,events:[],sort:{k:'marks',dir:'desc'},showAll:false};
+const uniq=a=>[...new Set(a)].sort();
+const toRow=r=>({sid:r.sid||r.studentId,cls:r.cls,sec:r.sec,subject:r.subject,period:r.period,sem:r.sem,date:r.date,exam:r.exam,marks:+r.marks,att:+r.att});
+async function call(path){const r=await fetch(CFG.apiUrl+path,{headers:{Authorization:tokens.id}});if(!r.ok)throw new Error('Could not load '+path+' ('+r.status+')');return r.json();}
+function derive(){
+  SUBJECTS=uniq(rows.map(r=>r.subject)).map(n=>({n}));
+  CLASSES=uniq(STUDENTS.map(s=>s.cls));SECTIONS=uniq(STUDENTS.map(s=>s.sec));
+  const seen={};rows.forEach(r=>{seen[r.period]=seen[r.period]||{k:r.period,sem:r.sem,name:r.exam,date:r.date}});
+  PERIODS=Object.values(seen).sort((x,y)=>x.k.localeCompare(y.k)).map(p=>({...p,label:MONTHS[+p.k.slice(5)-1]+' '+p.k.slice(0,4)}));
+  S_BY_ID={};STUDENTS.forEach(s=>S_BY_ID[s.id]=s);
+  const d=rows.map(r=>r.date).sort();FROM=d[0]||'';TODAY=d[d.length-1]||'';
+}
+function start(){
+/* ========== 2. Filters ========== */
+const el=id=>document.getElementById(id);
+function fill(sel,items,allLabel){
+  sel.innerHTML='<option value="">'+allLabel+'</option>'+items.map(v=>`<option value="${v}">${v}</option>`).join('');
+}
+fill(el('fClass'),CLASSES,'All classes');
+fill(el('fSection'),SECTIONS,'All sections');
+fill(el('fSubject'),SUBJECTS.map(s=>s.n),'All subjects');
+fill(el('fSem'),uniq(rows.map(r=>r.sem)),'All semesters');
+function refreshStudentFilter(){
+  const c=el('fClass').value,s=el('fSection').value;
+  const list=STUDENTS.filter(x=>(!c||x.cls===c)&&(!s||x.sec===s));
+  const cur=el('fStudent').value;
+  el('fStudent').innerHTML='<option value="">All students</option>'+
+    list.map(x=>`<option value="${x.id}">${x.name} · ${x.roll}</option>`).join('');
+  if(list.some(x=>x.id===cur))el('fStudent').value=cur;
+}
+refreshStudentFilter();
+el('fFrom').value=FROM; el('fTo').value=TODAY;
+
+function filtered(){
+  const c=el('fClass').value,s=el('fSection').value,sub=el('fSubject').value,
+        sem=el('fSem').value,stu=el('fStudent').value,f=el('fFrom').value,t=el('fTo').value;
+  return rows.filter(r=>(!c||r.cls===c)&&(!s||r.sec===s)&&(!sub||r.subject===sub)&&
+    (!sem||r.sem===sem)&&(!stu||r.sid===stu)&&(!f||r.date>=f)&&(!t||r.date<=t));
+}
+
+/* ========== 3. Analytics (the calculations the cloud function would run) ========== */
+const avg=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:0;
+function groupAvg(list,keyFn){
+  const m=new Map();
+  list.forEach(r=>{const k=keyFn(r);if(!m.has(k))m.set(k,{marks:[],att:[]});m.get(k).marks.push(r.marks);m.get(k).att.push(r.att)});
+  return m;
+}
+function analyse(list){
+  const results=[...groupAvg(list,r=>r.sid+'|'+r.subject)].map(([k,v])=>({
+    sid:k.split('|')[0],subject:k.split('|')[1],marks:avg(v.marks),att:avg(v.att)}));
+  const byStudent=[...groupAvg(list,r=>r.sid)].map(([sid,v])=>{
+    const rs=results.filter(x=>x.sid===sid);
+    const m=avg(v.marks),a=avg(v.att);
+    return {...S_BY_ID[sid],marks:m,att:a,cleared:rs.filter(x=>x.marks>=PASS).length,total:rs.length,
+            risk:m<45||a<70};
+  }).sort((x,y)=>y.marks-x.marks);
+  const passed=results.filter(r=>r.marks>=PASS).length;
+  return {list,results,byStudent,passed,failed:results.length-passed,
+    avgMarks:avg(list.map(r=>r.marks)),avgAtt:avg(list.map(r=>r.att))};
+}
+
+/* ========== 4. Rendering ========== */
+const tok=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const charts={};
+function mk(id,cfg){if(charts[id])charts[id].destroy();charts[id]=new Chart(el(id),cfg)}
+const fmt=(x,d=1)=>Number.isFinite(x)?x.toFixed(d):'—';
+
+function renderKPIs(a){
+  const n=a.byStudent.length, top=a.byStudent[0], low=a.byStudent[a.byStudent.length-1];
+  const pass=a.results.length?a.passed/a.results.length*100:0;
+  const risk=a.byStudent.filter(s=>s.risk).length;
+  const cards=[
+    ['Students tracked',n,`${a.list.length.toLocaleString('en-IN')} records in view`,''],
+    ['Average marks',fmt(a.avgMarks),'out of 100','' ],
+    ['Average attendance',fmt(a.avgAtt)+'%','across the period',''],
+    ['Pass rate',fmt(pass)+'%',`${a.passed} of ${a.results.length} results`,'good'],
+    ['Fail rate',fmt(100-pass)+'%',`${a.failed} results below 40`,'bad'],
+    ['Highest average',top?fmt(top.marks):'—',top?top.name:'','good'],
+    ['Lowest average',low?fmt(low.marks):'—',low?low.name:'','bad'],
+    ['Needs support',risk,'low marks or attendance',risk?'bad':'']];
+  el('ribbon').innerHTML=cards.map(([l,v,s,c])=>
+    `<div class="kpi ${c}"><div class="k-label">${l}</div><div class="num">${v}</div><div class="k-sub">${s}</div></div>`).join('');
+}
+
+function renderCharts(a){
+  const ink=tok('--ink-2'),grid=tok('--grid');
+  Chart.defaults.font.family="'IBM Plex Sans',system-ui,sans-serif";
+  Chart.defaults.font.size=12; Chart.defaults.color=ink;
+  const series=[tok('--s1'),tok('--s2'),tok('--s3'),tok('--s4'),tok('--s5'),tok('--s6')];
+  const ax=(max=100,title='')=>({beginAtZero:true,max,grid:{color:grid,drawTicks:false},border:{display:false},title:{display:!!title,text:title,color:tok('--ink-3')}});
+  const axX=()=>({grid:{display:false},border:{color:grid}});
+  const tt={backgroundColor:tok('--band'),padding:10,cornerRadius:4,displayColors:false,titleFont:{weight:'600'}};
+
+  // subject-wise average marks
+  const subs=SUBJECTS.map(s=>s.n).filter(n=>a.list.some(r=>r.subject===n));
+  const subAvg=subs.map(n=>avg(a.list.filter(r=>r.subject===n).map(r=>r.marks)));
+  mk('cSubject',{type:'bar',data:{labels:subs,datasets:[{data:subAvg,backgroundColor:subs.map((_,i)=>series[i%6]),borderRadius:3,maxBarThickness:58}]},
+    options:{maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{...tt,callbacks:{label:c=>'Average '+c.parsed.y.toFixed(1)+' / 100'}}},
+      scales:{y:ax(100,'average marks'),x:axX()}}});
+
+  // pass vs fail
+  el('resultCount').textContent=a.results.length+' results';
+  mk('cResult',{type:'doughnut',data:{labels:['Passed','Failed'],datasets:[{data:[a.passed,a.failed],
+      backgroundColor:[tok('--accent'),tok('--alert')],borderColor:tok('--surface'),borderWidth:3,hoverOffset:6}]},
+    options:{maintainAspectRatio:false,cutout:'62%',plugins:{legend:{position:'bottom',labels:{boxWidth:10,boxHeight:10,usePointStyle:true,pointStyle:'circle',padding:16}},
+      tooltip:{...tt,callbacks:{label:c=>c.label+': '+c.parsed+' results ('+(c.parsed/(a.results.length||1)*100).toFixed(1)+'%)'}}}}});
+
+  // trend
+  const per=PERIODS.filter(p=>a.list.some(r=>r.period===p.k));
+  const clsInView=CLASSES.filter(c=>a.list.some(r=>r.cls===c));
+  const sets=clsInView.map((c,i)=>({label:c,data:per.map(p=>{
+      const v=a.list.filter(r=>r.period===p.k&&r.cls===c);return v.length?+avg(v.map(r=>r.marks)).toFixed(1):null}),
+      borderColor:series[i],backgroundColor:series[i],tension:.32,borderWidth:2,pointRadius:3,pointHoverRadius:5,spanGaps:true}));
+  sets.push({label:'All selected students',data:per.map(p=>{const v=a.list.filter(r=>r.period===p.k);return v.length?+avg(v.map(r=>r.marks)).toFixed(1):null}),
+    borderColor:tok('--ink-3'),borderDash:[5,4],borderWidth:2,pointRadius:0,tension:.32,spanGaps:true});
+  mk('cTrend',{type:'line',data:{labels:per.map(p=>p.label+' · '+p.name),datasets:sets},
+    options:{maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+      plugins:{legend:{position:'bottom',labels:{boxWidth:14,boxHeight:2,padding:16}},tooltip:tt},
+      scales:{y:{...ax(100,'average marks'),beginAtZero:false,suggestedMin:30},x:axX()}}});
+
+  // class + section comparison
+  const groups=[];
+  CLASSES.forEach(c=>SECTIONS.forEach(s=>{const v=a.list.filter(r=>r.cls===c&&r.sec===s);
+    if(v.length)groups.push({label:c.replace('Year ','Y')+' · '+s,m:avg(v.map(r=>r.marks)),t:avg(v.map(r=>r.att))})}));
+  mk('cClass',{type:'bar',data:{labels:groups.map(g=>g.label),datasets:[
+      {label:'Average marks',data:groups.map(g=>+g.m.toFixed(1)),backgroundColor:tok('--s2'),borderRadius:3,maxBarThickness:26},
+      {label:'Average attendance %',data:groups.map(g=>+g.t.toFixed(1)),backgroundColor:tok('--s3'),borderRadius:3,maxBarThickness:26}]},
+    options:{maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{boxWidth:10,boxHeight:10,usePointStyle:true,pointStyle:'circle',padding:16}},tooltip:tt},
+      scales:{y:ax(100),x:axX()}}});
+
+  // attendance distribution
+  const bands=[['Below 60',0,60],['60–69',60,70],['70–74',70,75],['75–84',75,85],['85–100',85,101]];
+  const counts=bands.map(([,lo,hi])=>a.byStudent.filter(s=>s.att>=lo&&s.att<hi).length);
+  mk('cAttend',{type:'bar',data:{labels:bands.map(b=>b[0]),datasets:[{data:counts,
+      backgroundColor:bands.map((b,i)=>i<2?tok('--alert'):i===2?tok('--s3'):tok('--accent')),borderRadius:3,maxBarThickness:54}]},
+    options:{maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{...tt,callbacks:{label:c=>c.parsed.y+' students'}}},
+      scales:{y:{...ax(Math.max(4,Math.ceil(Math.max(...counts,1)*1.2)),'students'),ticks:{precision:0}},x:{...axX(),title:{display:true,text:'attendance %',color:tok('--ink-3')}}}}});
+
+  // scatter
+  const risky=a.byStudent.filter(s=>s.risk),okay=a.byStudent.filter(s=>!s.risk);
+  const pt=(arr)=>arr.map(s=>({x:+s.att.toFixed(1),y:+s.marks.toFixed(1),n:s.name,r:s.roll}));
+  mk('cScatter',{type:'scatter',data:{datasets:[
+      {label:'On track',data:pt(okay),backgroundColor:tok('--s5'),pointRadius:4.5,pointHoverRadius:7},
+      {label:'Needs support',data:pt(risky),backgroundColor:tok('--alert'),pointRadius:4.5,pointHoverRadius:7}]},
+    options:{maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{boxWidth:10,boxHeight:10,usePointStyle:true,pointStyle:'circle',padding:16}},
+      tooltip:{...tt,callbacks:{label:c=>`${c.raw.n} (${c.raw.r}) · ${c.raw.y} marks · ${c.raw.x}% attendance`}}},
+      scales:{y:{...ax(100,'average marks'),beginAtZero:false,suggestedMin:10},
+              x:{beginAtZero:false,suggestedMin:40,max:100,grid:{color:grid,drawTicks:false},border:{display:false},title:{display:true,text:'attendance %',color:tok('--ink-3')}}}}});
+}
+
+function renderTable(a){
+  const {k,dir}=state.sort;
+  const sorted=[...a.byStudent].sort((x,y)=>{
+    const va=x[k],vb=y[k];
+    const c=(typeof va==='string')?va.localeCompare(vb):va-vb;
+    return dir==='asc'?c:-c;});
+  const shown=state.showAll?sorted:sorted.slice(0,12);
+  el('tbl').querySelector('tbody').innerHTML=shown.map(s=>`<tr>
+    <td>${s.roll}</td><td>${s.name}</td><td>${s.cls}</td><td>${s.sec}</td>
+    <td class="n"><span class="bar-cell"><i style="width:${Math.max(4,s.marks*0.55)}px"></i>${s.marks.toFixed(1)}</span></td>
+    <td class="n">${s.att.toFixed(1)}%</td>
+    <td class="n">${s.cleared}/${s.total}</td>
+    <td><span class="chip ${s.risk?'risk':'pass'}">${s.risk?'Needs support':'On track'}</span></td></tr>`).join('')
+    ||'<tr><td colspan="8">No students match these filters. Clear a filter to see results.</td></tr>';
+  el('tableCount').textContent=sorted.length+' students';
+  el('more').style.display=sorted.length>12?'inline-block':'none';
+  el('more').textContent=state.showAll?'Show top 12 only':`Show all ${sorted.length} students`;
+  document.querySelectorAll('#tbl th').forEach(th=>{
+    if(th.dataset.k===k)th.dataset.dir=dir;else th.removeAttribute('data-dir')});
+}
+
+function renderFeed(){
+  el('mRecords').textContent=rows.length.toLocaleString('en-IN');
+  el('mNew').textContent=state.added;
+  el('feed').innerHTML=state.events.length?state.events.map(e=>
+    `<li><time>${e.t}</time><span><b>${e.head}</b><br>${e.sub}</span></li>`).join('')
+    :'<li><time>—</time><span>Waiting for the next write from the cloud database.</span></li>';
+}
+
+function renderAll(){const a=analyse(filtered());renderKPIs(a);renderCharts(a);renderTable(a);renderFeed();}
+
+/* ========== 5. Simulated real-time updates ========== */
+function clockTxt(d){return d.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})}
+function ingest(items){
+  const idx=new Map(rows.map((r,n)=>[r.sid+'|'+r.subject+'|'+r.period,n]));
+  items.forEach(it=>{const r=toRow(it),k=r.sid+'|'+r.subject+'|'+r.period;idx.has(k)?rows[idx.get(k)]=r:rows.push(r)});
+  state.added+=items.length;
+  const now=new Date(),f=items[0];
+  state.events.unshift({t:clockTxt(now),head:`${f.subject} · ${f.cls} ${f.sec}`,sub:`${items.length} record${items.length>1?'s':''} saved and processed`});
+  state.events=state.events.slice(0,5);
+  el('mSync').textContent=clockTxt(now);el('liveTxt').textContent='Live · synced '+clockTxt(now);
+  renderAll();
+}
+function connectLive(){
+  const sock=new WebSocket(CFG.wsUrl+'?token='+encodeURIComponent(tokens.access));
+  sock.onopen=()=>{el('liveTxt').textContent='Live · connected'};
+  sock.onmessage=m=>{const d=JSON.parse(m.data);if(state.live&&d.type==='records')ingest(d.items)};
+  sock.onclose=()=>setTimeout(connectLive,4000);
+}
+connectLive();
+el('toggleLive').addEventListener('click',()=>{
+  state.live=!state.live;
+  el('toggleLive').textContent=state.live?'Pause sync':'Resume sync';
+  el('dot').classList.toggle('off',!state.live);
+  el('liveTxt').textContent=state.live?'Live · sync resumed':'Sync paused · showing stored data';
+});
+
+/* ========== 6. Controls ========== */
+['fClass','fSection','fSubject','fSem','fStudent','fFrom','fTo'].forEach(id=>
+  el(id).addEventListener('change',()=>{
+    if(id==='fClass'||id==='fSection')refreshStudentFilter();
+    state.showAll=false;renderAll();}));
+el('reset').addEventListener('click',()=>{
+  ['fClass','fSection','fSubject','fSem','fStudent'].forEach(id=>el(id).value='');
+  el('fFrom').value=FROM;el('fTo').value=TODAY;refreshStudentFilter();state.showAll=false;renderAll();});
+document.querySelectorAll('#tbl th').forEach(th=>th.addEventListener('click',()=>{
+  const k=th.dataset.k;
+  state.sort=(state.sort.k===k)?{k,dir:state.sort.dir==='asc'?'desc':'asc'}:{k,dir:(k==='marks'||k==='att'||k==='cleared')?'desc':'asc'};
+  renderAll();}));
+el('more').addEventListener('click',()=>{state.showAll=!state.showAll;renderAll()});
+
+function applyTheme(t){
+  if(t)document.documentElement.setAttribute('data-theme',t);
+  else document.documentElement.removeAttribute('data-theme');
+  const dark=getComputedStyle(document.documentElement).getPropertyValue('--paper').trim().toLowerCase().startsWith('#0d');
+  el('toggleTheme').textContent=dark?'Light':'Dark';
+  renderAll();
+}
+let stored=null;try{stored=localStorage.getItem('spa-theme')}catch(e){}
+if(stored)applyTheme(stored);
+el('toggleTheme').addEventListener('click',()=>{
+  const dark=getComputedStyle(document.documentElement).getPropertyValue('--paper').trim().toLowerCase().startsWith('#0d');
+  const next=dark?'light':'dark';
+  try{localStorage.setItem('spa-theme',next)}catch(e){}
+  applyTheme(next);});
+
+el('mSync').textContent=clockTxt(new Date());
+if(window.Chart){renderAll();}
+else{document.querySelectorAll('.chart').forEach(c=>c.innerHTML='<p style="color:var(--ink-3);font-size:13px">Charts could not load. Check the network connection and reload.</p>');renderKPIs(analyse(filtered()));renderTable(analyse(filtered()));}
+
+}
+
+const $=id=>document.getElementById(id);
+async function signIn(user,pass){
+  const r=await fetch(`https://cognito-idp.${CFG.region}.amazonaws.com/`,{method:'POST',
+    headers:{'Content-Type':'application/x-amz-json-1.1','X-Amz-Target':'AWSCognitoIdentityProviderService.InitiateAuth'},
+    body:JSON.stringify({AuthFlow:'USER_PASSWORD_AUTH',ClientId:CFG.clientId,AuthParameters:{USERNAME:user,PASSWORD:pass}})});
+  const d=await r.json();if(!r.ok)throw new Error(d.message||'Sign-in failed');
+  return {id:d.AuthenticationResult.IdToken,access:d.AuthenticationResult.AccessToken};
+}
+async function boot(){
+  const [st,rec]=await Promise.all([call('/students'),call('/records')]);
+  STUDENTS=st.map(s=>({id:s.studentId,roll:s.roll,name:s.name,cls:s.cls,sec:s.sec}));
+  rows=rec.map(toRow);derive();start();
+}
+$('loginForm').addEventListener('submit',async e=>{
+  e.preventDefault();$('loginMsg').textContent='Signing in…';
+  try{tokens=await signIn($('email').value.trim(),$('password').value);await boot();$('login').hidden=true;}
+  catch(err){$('loginMsg').textContent=err.message;}
+});
+</script>
+</body>
+</html>

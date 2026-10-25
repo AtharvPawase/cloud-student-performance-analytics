@@ -1,0 +1,495 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Real-time student performance analytics - S3, Cognito, API Gateway (HTTP + WebSocket), Lambda, DynamoDB Streams, CloudWatch
+
+Parameters:
+  ProjectName: {Type: String, Default: student-analytics, AllowedPattern: "[a-z0-9-]+", MaxLength: 24}
+  Environment: {Type: String, Default: dev, AllowedValues: [dev, test, prod]}
+  Owner: {Type: String, Default: student}
+  AdminEmail: {Type: String, AllowedPattern: "[^@ ]+@[^@ ]+\\.[^@ ]+", Description: Email of the first admin user (used to sign in)}
+  PassMarks: {Type: Number, Default: 40}
+  LogRetentionDays: {Type: Number, Default: 14}
+
+Resources:
+  # ---------- S3 ----------
+  DataBucket:
+    Type: AWS::S3::Bucket
+    DependsOn: ProcessorInvokePermission
+    Properties:
+      BucketName: !Sub "${ProjectName}-${Environment}-${AWS::AccountId}-data"
+      PublicAccessBlockConfiguration: {BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration: [{ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}}]
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: "s3:ObjectCreated:*"
+            Function: !GetAtt ProcessorFunction.Arn
+            Filter: {S3Key: {Rules: [{Name: prefix, Value: raw/}, {Name: suffix, Value: .csv}]}}
+      Tags: [{Key: Project, Value: !Ref ProjectName}, {Key: Environment, Value: !Ref Environment}, {Key: Owner, Value: !Ref Owner}, {Key: Purpose, Value: csv-uploads-and-reports}]
+
+  DashboardBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectName}-${Environment}-${AWS::AccountId}-web"
+      WebsiteConfiguration: {IndexDocument: index.html, ErrorDocument: index.html}
+      PublicAccessBlockConfiguration: {BlockPublicAcls: true, IgnorePublicAcls: true, BlockPublicPolicy: false, RestrictPublicBuckets: false}
+      Tags: [{Key: Project, Value: !Ref ProjectName}, {Key: Environment, Value: !Ref Environment}, {Key: Owner, Value: !Ref Owner}, {Key: Purpose, Value: dashboard-hosting}]
+
+  DashboardBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DashboardBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement: [{Effect: Allow, Principal: "*", Action: "s3:GetObject", Resource: !Sub "${DashboardBucket.Arn}/*"}]
+
+  # ---------- DynamoDB ----------
+  StudentsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${ProjectName}-${Environment}-students"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{AttributeName: studentId, AttributeType: S}]
+      KeySchema: [{AttributeName: studentId, KeyType: HASH}]
+      SSESpecification: {SSEEnabled: true}
+      PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
+      Tags: [{Key: Project, Value: !Ref ProjectName}, {Key: Environment, Value: !Ref Environment}, {Key: Owner, Value: !Ref Owner}, {Key: Purpose, Value: student-profiles}]
+
+  RecordsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${ProjectName}-${Environment}-records"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{AttributeName: studentId, AttributeType: S}, {AttributeName: recordId, AttributeType: S}]
+      KeySchema: [{AttributeName: studentId, KeyType: HASH}, {AttributeName: recordId, KeyType: RANGE}]
+      StreamSpecification: {StreamViewType: NEW_AND_OLD_IMAGES}
+      SSESpecification: {SSEEnabled: true}
+      PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
+      Tags: [{Key: Project, Value: !Ref ProjectName}, {Key: Environment, Value: !Ref Environment}, {Key: Owner, Value: !Ref Owner}, {Key: Purpose, Value: marks-and-attendance}]
+
+  SummaryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${ProjectName}-${Environment}-summary"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{AttributeName: pk, AttributeType: S}]
+      KeySchema: [{AttributeName: pk, KeyType: HASH}]
+      SSESpecification: {SSEEnabled: true}
+
+  ConnectionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${ProjectName}-${Environment}-connections"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{AttributeName: connectionId, AttributeType: S}]
+      KeySchema: [{AttributeName: connectionId, KeyType: HASH}]
+      TimeToLiveSpecification: {AttributeName: ttl, Enabled: true}
+
+  # ---------- Cognito (authentication and roles) ----------
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "${ProjectName}-${Environment}-users"
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      AdminCreateUserConfig: {AllowAdminCreateUserOnly: true}
+      Policies: {PasswordPolicy: {MinimumLength: 8, RequireLowercase: true, RequireUppercase: true, RequireNumbers: true, RequireSymbols: false}}
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties: {UserPoolId: !Ref UserPool, ClientName: dashboard, GenerateSecret: false, ExplicitAuthFlows: [ALLOW_USER_PASSWORD_AUTH, ALLOW_REFRESH_TOKEN_AUTH]}
+  TeacherGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties: {UserPoolId: !Ref UserPool, GroupName: teacher, Description: Can save marks and attendance}
+  HodGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties: {UserPoolId: !Ref UserPool, GroupName: hod, Description: Head of department - view all data}
+  AdminGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties: {UserPoolId: !Ref UserPool, GroupName: admin, Description: Full access}
+  AdminUser:
+    Type: AWS::Cognito::UserPoolUser
+    Properties:
+      UserPoolId: !Ref UserPool
+      Username: !Ref AdminEmail
+      MessageAction: SUPPRESS
+      UserAttributes: [{Name: email, Value: !Ref AdminEmail}, {Name: email_verified, Value: "true"}]
+  AdminMembership:
+    Type: AWS::Cognito::UserPoolUserToGroupAttachment
+    Properties: {UserPoolId: !Ref UserPool, GroupName: !Ref AdminGroup, Username: !Ref AdminUser}
+
+  # ---------- CloudWatch log groups ----------
+  ProcessorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: {LogGroupName: !Sub "/aws/lambda/${ProjectName}-${Environment}-processor", RetentionInDays: !Ref LogRetentionDays}
+  ApiFnLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: {LogGroupName: !Sub "/aws/lambda/${ProjectName}-${Environment}-api", RetentionInDays: !Ref LogRetentionDays}
+  StreamLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: {LogGroupName: !Sub "/aws/lambda/${ProjectName}-${Environment}-stream", RetentionInDays: !Ref LogRetentionDays}
+  WsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: {LogGroupName: !Sub "/aws/lambda/${ProjectName}-${Environment}-ws", RetentionInDays: !Ref LogRetentionDays}
+  HttpApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: {LogGroupName: !Sub "/aws/apigateway/${ProjectName}-${Environment}", RetentionInDays: !Ref LogRetentionDays}
+
+  # ---------- IAM: one least-privilege role per function ----------
+  ProcessorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: {Version: "2012-10-17", Statement: [{Effect: Allow, Principal: {Service: lambda.amazonaws.com}, Action: "sts:AssumeRole"}]}
+      Policies:
+        - PolicyName: access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - {Effect: Allow, Action: ["logs:CreateLogStream", "logs:PutLogEvents"], Resource: !GetAtt ProcessorLogGroup.Arn}
+              - {Effect: Allow, Action: "s3:GetObject", Resource: !Sub "arn:aws:s3:::${ProjectName}-${Environment}-${AWS::AccountId}-data/raw/*"}
+              - {Effect: Allow, Action: ["dynamodb:PutItem", "dynamodb:BatchWriteItem"], Resource: [!GetAtt StudentsTable.Arn, !GetAtt RecordsTable.Arn]}
+  ApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: {Version: "2012-10-17", Statement: [{Effect: Allow, Principal: {Service: lambda.amazonaws.com}, Action: "sts:AssumeRole"}]}
+      Policies:
+        - PolicyName: access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - {Effect: Allow, Action: ["logs:CreateLogStream", "logs:PutLogEvents"], Resource: !GetAtt ApiFnLogGroup.Arn}
+              - {Effect: Allow, Action: "dynamodb:Scan", Resource: [!GetAtt StudentsTable.Arn, !GetAtt RecordsTable.Arn, !GetAtt SummaryTable.Arn]}
+              - {Effect: Allow, Action: "dynamodb:GetItem", Resource: !GetAtt StudentsTable.Arn}
+              - {Effect: Allow, Action: "dynamodb:PutItem", Resource: !GetAtt RecordsTable.Arn}
+  StreamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: {Version: "2012-10-17", Statement: [{Effect: Allow, Principal: {Service: lambda.amazonaws.com}, Action: "sts:AssumeRole"}]}
+      Policies:
+        - PolicyName: access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - {Effect: Allow, Action: ["logs:CreateLogStream", "logs:PutLogEvents"], Resource: !GetAtt StreamLogGroup.Arn}
+              - {Effect: Allow, Action: ["dynamodb:DescribeStream", "dynamodb:GetRecords", "dynamodb:GetShardIterator"], Resource: !GetAtt RecordsTable.StreamArn}
+              - {Effect: Allow, Action: "dynamodb:ListStreams", Resource: "*"}
+              - {Effect: Allow, Action: "dynamodb:UpdateItem", Resource: !GetAtt SummaryTable.Arn}
+              - {Effect: Allow, Action: ["dynamodb:Scan", "dynamodb:DeleteItem"], Resource: !GetAtt ConnectionsTable.Arn}
+              - {Effect: Allow, Action: "execute-api:ManageConnections", Resource: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WsApi}/live/POST/@connections/*"}
+  WsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: {Version: "2012-10-17", Statement: [{Effect: Allow, Principal: {Service: lambda.amazonaws.com}, Action: "sts:AssumeRole"}]}
+      Policies:
+        - PolicyName: access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - {Effect: Allow, Action: ["logs:CreateLogStream", "logs:PutLogEvents"], Resource: !GetAtt WsLogGroup.Arn}
+              - {Effect: Allow, Action: ["dynamodb:PutItem", "dynamodb:DeleteItem"], Resource: !GetAtt ConnectionsTable.Arn}
+
+  # ---------- Lambda ----------
+  ProcessorFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: ProcessorLogGroup
+    Properties:
+      FunctionName: !Sub "${ProjectName}-${Environment}-processor"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt ProcessorRole.Arn
+      Timeout: 120
+      MemorySize: 512
+      Environment: {Variables: {STUDENTS_TABLE: !Ref StudentsTable, RECORDS_TABLE: !Ref RecordsTable}}
+      Code:
+        ZipFile: |
+          import csv, io, os, urllib.parse
+          from decimal import Decimal
+          import boto3
+
+          s3, ddb = boto3.client("s3"), boto3.resource("dynamodb")
+          students, records = ddb.Table(os.environ["STUDENTS_TABLE"]), ddb.Table(os.environ["RECORDS_TABLE"])
+
+
+          def handler(event, context):
+              n = 0
+              for e in event["Records"]:
+                  bucket, key = e["s3"]["bucket"]["name"], urllib.parse.unquote_plus(e["s3"]["object"]["key"])
+                  text = s3.get_object(Bucket=bucket, Key=key)["Body"].read().decode("utf-8-sig")
+                  with students.batch_writer(overwrite_by_pkeys=["studentId"]) as sw, \
+                       records.batch_writer(overwrite_by_pkeys=["studentId", "recordId"]) as rw:
+                      for r in csv.DictReader(io.StringIO(text)):
+                          m, a = Decimal(r["marks"]), Decimal(r["attendance"])
+                          if not (0 <= m <= 100 and 0 <= a <= 100):
+                              continue  # validation: marks and attendance must be 0-100
+                          sw.put_item(Item={"studentId": r["student_id"], "roll": r["roll"], "name": r["name"],
+                                            "cls": r["class"], "sec": r["section"]})
+                          rw.put_item(Item={"studentId": r["student_id"], "recordId": f'{r["period"]}#{r["subject"]}',
+                                            "cls": r["class"], "sec": r["section"], "subject": r["subject"],
+                                            "period": r["period"], "sem": r["semester"], "date": r["date"],
+                                            "exam": r["exam"], "marks": m, "att": a})
+                          n += 1
+              print(f"Loaded {n} records")
+              return {"loaded": n}
+  ApiFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: ApiFnLogGroup
+    Properties:
+      FunctionName: !Sub "${ProjectName}-${Environment}-api"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt ApiRole.Arn
+      Timeout: 20
+      MemorySize: 256
+      Environment: {Variables: {STUDENTS_TABLE: !Ref StudentsTable, RECORDS_TABLE: !Ref RecordsTable, SUMMARY_TABLE: !Ref SummaryTable}}
+      Code:
+        ZipFile: |
+          import json, os
+          from decimal import Decimal
+          import boto3
+
+          ddb = boto3.resource("dynamodb")
+          T = {k: ddb.Table(os.environ[k]) for k in ("STUDENTS_TABLE", "RECORDS_TABLE", "SUMMARY_TABLE")}
+
+
+          def scan(t):
+              out, kw = [], {}
+              while True:
+                  r = t.scan(**kw)
+                  out += r["Items"]
+                  if "LastEvaluatedKey" not in r:
+                      return out
+                  kw["ExclusiveStartKey"] = r["LastEvaluatedKey"]
+
+
+          def resp(code, body):
+              return {"statusCode": code, "headers": {"Content-Type": "application/json"},
+                      "body": json.dumps(body, default=float)}
+
+
+          def handler(event, context):
+              route = event["routeKey"]
+              groups = event["requestContext"]["authorizer"]["jwt"]["claims"].get("cognito:groups", "")
+              if route == "GET /students":
+                  return resp(200, scan(T["STUDENTS_TABLE"]))
+              if route == "GET /records":
+                  return resp(200, scan(T["RECORDS_TABLE"]))
+              if route == "GET /summary":
+                  return resp(200, scan(T["SUMMARY_TABLE"]))
+              if route == "POST /records":
+                  if "teacher" not in groups and "admin" not in groups:
+                      return resp(403, {"error": "Only teachers and admins can save marks"})
+                  try:
+                      b = json.loads(event["body"])
+                      m, a = Decimal(str(b["marks"])), Decimal(str(b["attendance"]))
+                      if not (0 <= m <= 100 and 0 <= a <= 100):
+                          raise ValueError("marks and attendance must be between 0 and 100")
+                      st = T["STUDENTS_TABLE"].get_item(Key={"studentId": b["studentId"]}).get("Item")
+                      if not st:
+                          raise ValueError("unknown student")
+                      # same student + subject + period overwrites the old row, so duplicates cannot occur
+                      T["RECORDS_TABLE"].put_item(Item={
+                          "studentId": b["studentId"], "recordId": f'{b["period"]}#{b["subject"]}',
+                          "cls": st["cls"], "sec": st["sec"], "subject": b["subject"], "period": b["period"],
+                          "sem": b["sem"], "date": b["date"], "exam": b["exam"], "marks": m, "att": a})
+                  except (KeyError, ValueError, ArithmeticError) as e:
+                      return resp(400, {"error": f"Invalid record: {e}"})
+                  return resp(201, {"saved": True})
+              return resp(404, {"error": "Not found"})
+  StreamFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: StreamLogGroup
+    Properties:
+      FunctionName: !Sub "${ProjectName}-${Environment}-stream"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt StreamRole.Arn
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          SUMMARY_TABLE: !Ref SummaryTable
+          CONNECTIONS_TABLE: !Ref ConnectionsTable
+          PASS_MARKS: !Ref PassMarks
+          WS_ENDPOINT: !Sub "https://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/live"
+      Code:
+        ZipFile: |
+          import json, os
+          import boto3
+          from boto3.dynamodb.types import TypeDeserializer
+
+          ddb, des = boto3.resource("dynamodb"), TypeDeserializer()
+          summary, conns = ddb.Table(os.environ["SUMMARY_TABLE"]), ddb.Table(os.environ["CONNECTIONS_TABLE"])
+          api = boto3.client("apigatewaymanagementapi", endpoint_url=os.environ["WS_ENDPOINT"])
+          PASS = int(os.environ["PASS_MARKS"])
+          FIELDS = ("cls", "sec", "subject", "period", "sem", "date", "exam", "marks", "att")
+
+
+          def img(i):
+              return {k: des.deserialize(v) for k, v in i.items()} if i else None
+
+
+          def handler(event, context):
+              agg, fresh = {}, []
+              for rec in event["Records"]:
+                  old, new = img(rec["dynamodb"].get("OldImage")), img(rec["dynamodb"].get("NewImage"))
+                  for im, sign in ((old, -1), (new, 1)):
+                      if not im:
+                          continue
+                      for key in (f'{im["cls"]}|{im["sec"]}', "ALL"):
+                          v = agg.setdefault(key, [0, 0, 0, 0])
+                          v[0] += sign
+                          v[1] += im["marks"] * sign
+                          v[2] += im["att"] * sign
+                          v[3] += int(im["marks"] >= PASS) * sign
+                  if new:
+                      fresh.append({"sid": new["studentId"], **{k: new[k] for k in FIELDS}})
+              for key, (n, m, a, p) in agg.items():  # keep running totals the dashboard summary needs
+                  summary.update_item(Key={"pk": key}, UpdateExpression="ADD n :n, marksSum :m, attSum :a, passN :p",
+                                      ExpressionAttributeValues={":n": n, ":m": m, ":a": a, ":p": p})
+              if fresh:  # push the new rows to every open dashboard
+                  data = json.dumps({"type": "records", "items": fresh}, default=float).encode()
+                  for c in conns.scan()["Items"]:
+                      try:
+                          api.post_to_connection(ConnectionId=c["connectionId"], Data=data)
+                      except api.exceptions.GoneException:
+                          conns.delete_item(Key={"connectionId": c["connectionId"]})
+              return {"processed": len(event["Records"])}
+  WsFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: WsLogGroup
+    Properties:
+      FunctionName: !Sub "${ProjectName}-${Environment}-ws"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt WsRole.Arn
+      Timeout: 10
+      MemorySize: 128
+      Environment: {Variables: {CONNECTIONS_TABLE: !Ref ConnectionsTable}}
+      Code:
+        ZipFile: |
+          import os, time
+          import boto3
+
+          cognito = boto3.client("cognito-idp")
+          conns = boto3.resource("dynamodb").Table(os.environ["CONNECTIONS_TABLE"])
+
+
+          def handler(event, context):
+              rc = event["requestContext"]
+              if rc["routeKey"] == "$connect":
+                  try:  # only signed-in users may listen: the access token must be valid
+                      cognito.get_user(AccessToken=event["queryStringParameters"]["token"])
+                  except Exception:
+                      return {"statusCode": 401}
+                  conns.put_item(Item={"connectionId": rc["connectionId"], "ttl": int(time.time()) + 7200})
+              else:
+                  conns.delete_item(Key={"connectionId": rc["connectionId"]})
+              return {"statusCode": 200}
+
+  ProcessorInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ProcessorFunction
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub "arn:aws:s3:::${ProjectName}-${Environment}-${AWS::AccountId}-data"
+  StreamMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties: {FunctionName: !Ref StreamFunction, EventSourceArn: !GetAtt RecordsTable.StreamArn, StartingPosition: TRIM_HORIZON, BatchSize: 100, MaximumBatchingWindowInSeconds: 2, MaximumRetryAttempts: 3, BisectBatchOnFunctionError: true}
+
+  # ---------- API Gateway: HTTP API (secured by Cognito) ----------
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-api"
+      ProtocolType: HTTP
+      CorsConfiguration: {AllowOrigins: ["*"], AllowMethods: [GET, POST, OPTIONS], AllowHeaders: [content-type, authorization]}
+  JwtAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref HttpApi
+      AuthorizerType: JWT
+      Name: cognito
+      IdentitySource: ["$request.header.Authorization"]
+      JwtConfiguration: {Audience: [!Ref UserPoolClient], Issuer: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}"}
+  ApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties: {ApiId: !Ref HttpApi, IntegrationType: AWS_PROXY, IntegrationUri: !GetAtt ApiFunction.Arn, PayloadFormatVersion: "2.0"}
+  StudentsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: {ApiId: !Ref HttpApi, RouteKey: "GET /students", AuthorizationType: JWT, AuthorizerId: !Ref JwtAuthorizer, Target: !Sub "integrations/${ApiIntegration}"}
+  RecordsGetRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: {ApiId: !Ref HttpApi, RouteKey: "GET /records", AuthorizationType: JWT, AuthorizerId: !Ref JwtAuthorizer, Target: !Sub "integrations/${ApiIntegration}"}
+  SummaryRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: {ApiId: !Ref HttpApi, RouteKey: "GET /summary", AuthorizationType: JWT, AuthorizerId: !Ref JwtAuthorizer, Target: !Sub "integrations/${ApiIntegration}"}
+  RecordsPostRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: {ApiId: !Ref HttpApi, RouteKey: "POST /records", AuthorizationType: JWT, AuthorizerId: !Ref JwtAuthorizer, Target: !Sub "integrations/${ApiIntegration}"}
+  HttpStage:
+    Type: AWS::ApiGatewayV2::Stage
+    DependsOn: [StudentsRoute, RecordsGetRoute, SummaryRoute, RecordsPostRoute]
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: "$default"
+      AutoDeploy: true
+      DefaultRouteSettings: {ThrottlingBurstLimit: 50, ThrottlingRateLimit: 100}
+      AccessLogSettings:
+        DestinationArn: !GetAtt HttpApiLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","route":"$context.routeKey","status":"$context.status","latency":"$context.responseLatency"}'
+  ApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ApiFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*"
+
+  # ---------- API Gateway: WebSocket API (real-time channel) ----------
+  WsApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties: {Name: !Sub "${ProjectName}-${Environment}-live", ProtocolType: WEBSOCKET, RouteSelectionExpression: "$request.body.action"}
+  WsIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties: {ApiId: !Ref WsApi, IntegrationType: AWS_PROXY, IntegrationUri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WsFunction.Arn}/invocations"}
+  WsConnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: {ApiId: !Ref WsApi, RouteKey: "$connect", AuthorizationType: NONE, Target: !Sub "integrations/${WsIntegration}"}
+  WsDisconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: {ApiId: !Ref WsApi, RouteKey: "$disconnect", AuthorizationType: NONE, Target: !Sub "integrations/${WsIntegration}"}
+  WsDeployment:
+    Type: AWS::ApiGatewayV2::Deployment
+    DependsOn: [WsConnectRoute, WsDisconnectRoute]
+    Properties: {ApiId: !Ref WsApi}
+  WsStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties: {ApiId: !Ref WsApi, StageName: live, DeploymentId: !Ref WsDeployment, DefaultRouteSettings: {ThrottlingBurstLimit: 50, ThrottlingRateLimit: 100}}
+  WsInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref WsFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WsApi}/*/*"
+
+  # ---------- CloudWatch alarms ----------
+  StreamErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties: {AlarmDescription: Processing function errors, Namespace: AWS/Lambda, MetricName: Errors, Dimensions: [{Name: FunctionName, Value: !Ref StreamFunction}], Statistic: Sum, Period: 300, EvaluationPeriods: 1, Threshold: 1, ComparisonOperator: GreaterThanOrEqualToThreshold, TreatMissingData: notBreaching}
+  ApiErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties: {AlarmDescription: API function errors, Namespace: AWS/Lambda, MetricName: Errors, Dimensions: [{Name: FunctionName, Value: !Ref ApiFunction}], Statistic: Sum, Period: 300, EvaluationPeriods: 1, Threshold: 1, ComparisonOperator: GreaterThanOrEqualToThreshold, TreatMissingData: notBreaching}
+  Api5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties: {AlarmDescription: API Gateway 5xx responses, Namespace: AWS/ApiGateway, MetricName: 5xx, Dimensions: [{Name: ApiId, Value: !Ref HttpApi}], Statistic: Sum, Period: 300, EvaluationPeriods: 1, Threshold: 1, ComparisonOperator: GreaterThanOrEqualToThreshold, TreatMissingData: notBreaching}
+
+Outputs:
+  HttpApiUrl: {Description: REST API base URL, Value: !GetAtt HttpApi.ApiEndpoint}
+  WebSocketUrl: {Description: Real-time channel URL, Value: !Sub "wss://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/live"}
+  DashboardUrl: {Description: Dashboard website, Value: !GetAtt DashboardBucket.WebsiteURL}
+  DataBucketName: {Description: Upload CSV files to raw/, Value: !Ref DataBucket}
+  DashboardBucketName: {Description: Dashboard hosting bucket, Value: !Ref DashboardBucket}
+  UserPoolId: {Description: Cognito user pool, Value: !Ref UserPool}
+  UserPoolClientId: {Description: Cognito app client for the dashboard, Value: !Ref UserPoolClient}
+  RecordsTableName: {Description: DynamoDB marks and attendance table, Value: !Ref RecordsTable}

@@ -1,0 +1,6 @@
+.env
+*.pem
+*.key
+credentials
+__pycache__/
+dashboard/config.js
